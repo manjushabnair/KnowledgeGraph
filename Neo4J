@@ -1,0 +1,119 @@
+const neo4j = require('neo4j-driver')
+const driver = neo4j.driver("bolt://localhost:7687", neo4j.auth.basic("neo4j", "password"))
+let session = driver.session()
+let expertsCount = 10;
+let experts = [];
+let languages = ["English", "Polish", "Spanish", "French", "Dutch", "Deutsch", "Irish"];
+
+function generateExperts() {
+    for (let i = 1; i <= expertsCount; i++) {
+        experts.push("Expert" + i);
+    }
+}
+
+function getCategories(properties) {
+    let categories = [];
+    for (let i = 0; i < properties.records.length; i++) {
+        let element = properties.records[i]
+        if (element._fields[0] != null && element._fields[0].Title != null && element._fields[0].Title != "Main_topic_classifications") {
+            categories.push(element._fields[0].Title)
+        }
+    }
+    return categories;
+}
+
+async function main() {
+
+    generateExperts();
+
+    try {
+        // const setIndexOnCategory = await session.run(
+        //     'CREATE INDEX ON :CATEGORY(Category)' 
+        // );
+
+        // const setIndexOnTranslation  = await session.run(
+        //     'CREATE INDEX ON :CATEGORY(en)'
+        // );
+
+        const loadCategories = await session.run(
+            'USING PERIODIC COMMIT 500 LOAD CSV WITH HEADERS FROM "http://localhost:11001/project-36395a85-c970-4def-ba35-4b2fba45e5c7/Sampledata.csv" AS Row MERGE (category:CATEGORY {Title: replace(Row.category,"Category:","")}) MERGE (subCategory:SUBCATEGORY {Title: replace(Row.subcategory,"Category:","")}) '
+        )
+
+        const addRelation = await session.run(
+            'USING PERIODIC COMMIT 500 LOAD CSV WITH HEADERS FROM "http://localhost:11001/project-36395a85-c970-4def-ba35-4b2fba45e5c7/Sampledata.csv" AS Row MATCH (category:CATEGORY {Title: replace(Row.category,"Category:","")}) MATCH (subcategory:SUBCATEGORY {Title: replace(Row.subcategory,"Category:","")}) MERGE (category) -[:SUBCATEGORY]-> (subcategory)'
+        )
+
+        //Add Languages Node
+        let generatedLanguages = []
+        for (let elem of languages) {
+            try {
+                let languageSession = driver.session()
+                let insertResponse = await languageSession.run('CREATE (l:LANGUAGE {Name:$element}) ', { element: elem })
+                generatedLanguages.push(insertResponse)
+                languageSession.close();
+            } catch (error) {
+                console.log('error' + error);
+            }
+        }
+
+        //Add Ratings Node
+        let generatedRatings = []
+        for (let i = 0; i <= 10; i++) {
+            try {
+                let ratingsSession = driver.session()
+                let insertResponse = await ratingsSession.run('CREATE (r:RATING {Value:$element}) ', { element: i })
+                generatedRatings.push(insertResponse)
+                ratingsSession.close();
+            } catch (error) {
+                console.log('error' + error);
+            }
+        }
+
+        const properties = await session.run(
+            'MATCH (n:CATEGORY) RETURN properties(n)'
+        )
+
+        let categories = getCategories(properties);
+        let generatedResponse = []
+        for (let elem of categories) {
+            try {
+                let categorySession = driver.session()
+                let insertResponse = await categorySession.
+                    run('CREATE (e:EXPERT {Name:$randomExpert ,Specality:$element , Language:$langauge , Rating:$rating}) ',
+                        {
+                            randomExpert: experts[Math.floor(Math.random() * experts.length)],
+                            element: elem,
+                            langauge: languages[Math.floor(Math.random() * languages.length)],
+                            rating: (Math.floor(Math.random() * 10))
+                        })
+                generatedResponse.push(insertResponse)
+                categorySession.close();
+            } catch (error) {
+                console.log('error' + error);
+            }
+        }
+
+        let addExpertCategoryRelation = await session.run(
+            'MATCH(e:EXPERT) MATCH(c:CATEGORY) where e.Specality = c.Title MERGE (e)-[:SPECIALISESIN]->(c)'
+        )
+
+        let addExpertLanguageRelation = await session.run(
+            'MATCH(e:EXPERT) MATCH(l:LANGUAGE) where e.Language = l.Name MERGE (e)-[:KNOWS]->(l)'
+        )
+
+        let addExpertRatingRelation = await session.run(
+            'MATCH(e:EXPERT) MATCH(r:RATING) where e.Rating = r.Value MERGE (e)-[:HASRATINGOF]->(r)'
+        )
+
+        const addRootNode = await session.run(
+            'MATCH (n {Title:"Main_topic_classifications"}) SET n:ROOT;'
+        )
+
+    } finally {
+        await session.close()
+    }
+    // on application exit:
+    await driver.close()
+}
+
+main();
